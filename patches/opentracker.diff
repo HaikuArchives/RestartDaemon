@@ -1,0 +1,210 @@
+Index: tracker/Commands.h
+===================================================================
+RCS file: /cvsroot/opentracker/opentracker/tracker/Commands.h,v
+retrieving revision 1.8
+diff -u -r1.8 Commands.h
+--- tracker/Commands.h	6 Jul 2003 18:22:19 -0000	1.8
++++ tracker/Commands.h	7 Jul 2004 18:16:53 -0000
+@@ -51,6 +51,10 @@
+ const uint32 kCloseAllWindows = 'Tall';
+ const uint32 kCloseWindowAndChildren = 'Tcwc';
+ 
++const uint32 RD_RESTART_APP = 'rdra';
++const uint32 RD_RESTARTD_OK = 'rdok';
++const uint32 RD_RESTARTD_ERROR = 'rder';
++
+ // end external app messages
+ 
+ const uint32 kRestoreState = 'Trst';
+@@ -75,6 +79,9 @@
+ const uint32 kAddPrinter = 'Tadp';
+ const uint32 kMakeActivePrinter = 'Tmap';
+ 
++const uint32 kRestartTracker = 'Tr*t';
++const uint32 kRestartDaemonPresenceMessage = 'Tr*p';
++
+ const uint32 kUnmountVolume = 'Tunm';
+ const uint32 kRunAutomounterSettings = 'Tram';
+ 
+Index: tracker/ContainerWindow.cpp
+===================================================================
+RCS file: /cvsroot/opentracker/opentracker/tracker/ContainerWindow.cpp,v
+retrieving revision 1.25
+diff -u -r1.25 ContainerWindow.cpp
+--- tracker/ContainerWindow.cpp	9 Mar 2004 17:45:57 -0000	1.25
++++ tracker/ContainerWindow.cpp	7 Jul 2004 18:16:54 -0000
+@@ -34,6 +34,7 @@
+ 
+ #include <string.h>
+ #include <stdlib.h>
++#include <stdio.h>//remember to remove this before submitting patch.
+ #include <image.h>
+ 
+ #include <Alert.h>
+@@ -53,6 +54,7 @@
+ #include <Volume.h>
+ #include <VolumeRoster.h>
+ #include <Roster.h>
++#include <Query.h>
+ 
+ #include <fs_attr.h>
+ 
+@@ -89,7 +91,7 @@
+ const uint32 kRedo = 'REDO';
+ 	// this is the same as B_REDO in Dano/Zeta/OpenBeOS
+ 
+-
++static const char * RD_RESTART_DAEMON_SIGNATURE = "application/x-vnd.bls-restart_daemon";
+ #if !B_BEOS_VERSION_DANO
+ _IMPEXP_BE
+ #endif
+@@ -468,6 +470,7 @@
+ 		fCopyToItem(NULL),
+ 		fCreateLinkItem(NULL),
+ 		fOpenWithItem(NULL),
++		fRestartTrackerItem(NULL),
+ 		fNavigationItem(NULL),
+ 		fMenuBar(NULL),
+ 		fNavigator(NULL),
+@@ -476,6 +479,7 @@
+ 		fAttrMenu(NULL),
+ 		fWindowMenu(NULL),
+ 		fFileMenu(NULL),
++		fRestartDaemonPresenceMessageRunner(NULL),
+ 		fSelectionWindow(NULL),
+ 		fTaskLoop(NULL),
+ 		fIsTrash(false),
+@@ -502,6 +506,12 @@
+ 
+ 	Run();
+ 
++	// Start a message runner that looks for the restart_daemon on the user's computer.
++	BMessenger *window_messenger=new BMessenger(NULL, this);
++	
++	fRestartDaemonPresenceMessageRunner=new BMessageRunner(*window_messenger,new BMessage(kRestartDaemonPresenceMessage),0x00e4e1c0 /*15 seconds*/, -1);
++	
++
+ 	// Watch out for settings changes:
+ 	if (TTracker *app = dynamic_cast<TTracker*>(be_app)) {
+ 		app->Lock();
+@@ -538,6 +548,8 @@
+ 	delete fDragMessage;
+ 	delete fCachedTypesList;
+ 
++	delete fRestartDaemonPresenceMessageRunner;
++
+ 	if (fSelectionWindow && fSelectionWindow->Lock())
+ 		fSelectionWindow->Quit();
+ }
+@@ -1279,6 +1291,58 @@
+ BContainerWindow::MessageReceived(BMessage *message)
+ {
+ 	switch (message->what) {
++		case kRestartDaemonPresenceMessage:
++		{
++			//This code checks to see if the restart_daemon is present on the boot volume.
++			printf("checking for restart_daemon.\n");
++			printf("creating volume roster\n");
++			BVolumeRoster volume_roster;
++			printf("creating boot_volume\n");
++			BVolume boot_volume;
++			printf("setting boot volume\n");
++			volume_roster.GetBootVolume(&boot_volume);
++			printf("creating query\n");
++			BQuery query;
++			printf("setting volume in query\n");
++			query.SetVolume(&boot_volume);
++			printf("pushing attribute\n");
++			
++			query.PushAttr("BEOS:APP_SIG");
++			printf("pushing value\n");
++			
++			query.PushString(RD_RESTART_DAEMON_SIGNATURE,true);
++			printf("pushing operator\n");
++			
++			query.PushOp(B_GE);
++			printf("performing fetch\n");
++			
++			query.Fetch();
++			printf("creating BEntry\n");
++			
++			BEntry daemon_entry;
++			printf("getting entry\n");
++			
++			query.GetNextEntry(&daemon_entry,true);
++			//just a routine sanity check...
++			if (daemon_entry.Exists())
++			{
++				printf("daemon item exists\n");
++				if (fRestartTrackerItem!=NULL)
++					if (!fRestartTrackerItem->IsEnabled())
++						fRestartTrackerItem->SetEnabled(true);
++			}
++			else
++			{
++				printf("daemon item doesn't exist\n");
++				if (fRestartTrackerItem!=NULL)
++					if (!fRestartTrackerItem->IsEnabled())
++						fRestartTrackerItem->SetEnabled(false);
++			}
++			printf("all done\n");
++			delete message;
++			
++			break;
++		}
+ 		case B_CUT:
+ 		case B_COPY:
+ 		case B_PASTE:
+@@ -1742,6 +1806,11 @@
+ 			menu->AddItem(new BMenuItem("New Folder", new BMessage(kNewFolder), 'N'));
+ 	}
+ 	menu->AddSeparatorItem();
++	fRestartTrackerItem=new BMenuItem("Restart Tracker",new BMessage(kRestartTracker));
++	fRestartTrackerItem->SetEnabled(false);
++	menu->AddItem(fRestartTrackerItem);
++	
++	menu->AddSeparatorItem();
+ 	
+ 	menu->AddItem(new BMenuItem("Open", new BMessage(kOpenSelection), 'O'));
+ 	menu->AddItem(new BMenuItem("Get Info", new BMessage(kGetInfo), 'I'));
+Index: tracker/ContainerWindow.h
+===================================================================
+RCS file: /cvsroot/opentracker/opentracker/tracker/ContainerWindow.h,v
+retrieving revision 1.5
+diff -u -r1.5 ContainerWindow.h
+--- tracker/ContainerWindow.h	25 Nov 2003 16:37:40 -0000	1.5
++++ tracker/ContainerWindow.h	7 Jul 2004 18:16:54 -0000
+@@ -36,6 +36,7 @@
+ #define _CONTAINER_WINDOW_H
+ 
+ #include <Window.h>
++#include <MessageRunner.h>
+ 
+ #include "LockingList.h"
+ #include "Model.h"
+@@ -73,7 +74,7 @@
+ 
+ class BContainerWindow : public BWindow {
+ 	public:
+-		BContainerWindow(LockingList<BWindow> *windowList,
++ 		BContainerWindow(LockingList<BWindow> *windowList,
+ 			uint32 containerWindowFlags,
+ 			window_look look = B_DOCUMENT_WINDOW_LOOK,
+ 			window_feel feel = B_NORMAL_WINDOW_FEEL, 
+@@ -251,6 +252,7 @@
+ 		BMenuItem *fCopyToItem;
+ 		BMenuItem *fCreateLinkItem;
+ 		BMenuItem *fOpenWithItem;
++		BMenuItem *fRestartTrackerItem;
+ 		ModelMenuItem *fNavigationItem;
+ 		BMenuBar *fMenuBar;
+ 		BNavigator *fNavigator;
+@@ -260,6 +262,8 @@
+ 		BMenu *fWindowMenu;
+ 		BMenu *fFileMenu;
+ 
++		BMessageRunner *fRestartDaemonPresenceMessageRunner; //Yes, it is an absurdly long variable name.
++
+ 		SelectionWindow *fSelectionWindow;
+ 
+ 		PiggybackTaskLoop *fTaskLoop;
